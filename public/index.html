@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Upload Excel — Parser Demo</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+  </head>
+  <body class="bg-gray-100 min-h-screen flex items-center justify-center p-6">
+    <div class="w-full max-w-4xl bg-white rounded-2xl shadow-xl p-8">
+      <h2 class="text-2xl font-bold text-indigo-600 mb-4">
+        Excel Parser: Detect POL, POD, RATES, SIZE, CONTAINER TYPE
+      </h2>
+      <p class="text-gray-600 mb-6">Upload a spreadsheet</p>
+
+      <div class="space-y-4">
+        <input
+          id="file"
+          type="file"
+          accept=".xls,.xlsx,.csv"
+          class="block w-full text-sm text-gray-700 border border-gray-300 rounded-lg cursor-pointer bg-gray-50 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+        />
+        <button
+          id="uploadBtn"
+          class="px-4 py-2 bg-indigo-600 text-white rounded-lg shadow hover:bg-indigo-700 transition"
+        >
+          Upload & Parse
+        </button>
+      </div>
+
+      <div class="mt-6 space-y-6">
+        <!-- Upload Progress -->
+        <div>
+          <div class="flex justify-between text-sm mb-1">
+            <span class="font-medium text-gray-700">Upload Progress</span>
+            <span id="uploadPercent" class="text-gray-500">0%</span>
+          </div>
+          <div class="w-full bg-gray-200 rounded-full h-4">
+            <div
+              id="uploadBar"
+              class="bg-green-500 h-4 rounded-full transition-all"
+              style="width: 0%"
+            ></div>
+          </div>
+        </div>
+
+        <!-- Parsing Progress -->
+        <div>
+          <div class="flex justify-between text-sm mb-1">
+            <span class="font-medium text-gray-700">Parsing Progress</span>
+            <span id="parsePercent" class="text-gray-500"
+              >0% (estimating...)</span
+            >
+          </div>
+          <div class="w-full bg-gray-200 rounded-full h-4">
+            <div
+              id="parseBar"
+              class="bg-indigo-500 h-4 rounded-full transition-all"
+              style="width: 0%"
+            ></div>
+          </div>
+          <div class="text-xs text-gray-500 mt-1">
+            Status: <span id="parsingStatus">idle</span>
+          </div>
+        </div>
+      </div>
+
+      <div id="resultArea" class="mt-8"></div>
+    </div>
+
+    <script>
+      const fileInput = document.getElementById("file");
+      const uploadBtn = document.getElementById("uploadBtn");
+      const uploadBar = document.getElementById("uploadBar");
+      const parseBar = document.getElementById("parseBar");
+      const parsingStatus = document.getElementById("parsingStatus");
+      const resultArea = document.getElementById("resultArea");
+      const uploadPercent = document.getElementById("uploadPercent");
+      const parsePercent = document.getElementById("parsePercent");
+
+      let startTime;
+
+      uploadBtn.addEventListener("click", () => {
+        const f = fileInput.files[0];
+        if (!f) return alert("Choose a file");
+        resultArea.innerHTML = "";
+        uploadBar.style.width = "0%";
+        parseBar.style.width = "0%";
+        parsingStatus.textContent = "starting";
+        uploadPercent.textContent = "0%";
+        parsePercent.textContent = "0% (estimating...)";
+
+        const form = new FormData();
+        form.append("file", f);
+
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", "/upload", true);
+
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            const percent = Math.round((e.loaded / e.total) * 100);
+            uploadBar.style.width = percent + "%";
+            uploadPercent.textContent = percent + "%";
+          }
+        };
+
+        xhr.onreadystatechange = () => {
+          if (xhr.readyState === 4 && xhr.status === 200) {
+            try {
+              const data = JSON.parse(xhr.responseText);
+              const jobId = data.jobId;
+              startTime = Date.now();
+              listenProgress(jobId);
+            } catch (err) {
+              alert("Server error: " + err);
+            }
+          } else if (xhr.readyState === 4) {
+            alert("Upload failed: " + xhr.responseText);
+          }
+        };
+
+        xhr.send(form);
+      });
+
+      function listenProgress(jobId) {
+        const es = new EventSource("/progress/" + jobId);
+        es.addEventListener("progress", (e) => {
+          const d = JSON.parse(e.data);
+          parseBar.style.width = (d.progress || 0) + "%";
+          parsingStatus.textContent = d.status || "";
+
+          if (d.progress) {
+            const elapsed = (Date.now() - startTime) / 1000; // seconds
+            const rate = d.progress / elapsed; // percent per second
+            const remaining = Math.max(
+              0,
+              Math.round((100 - d.progress) / rate)
+            );
+            parsePercent.textContent = `${d.progress}% (~${remaining}s left)`;
+          }
+
+          if (d.error) {
+            parsingStatus.textContent = "error";
+            es.close();
+            alert("Parse error: " + d.error);
+          }
+          if (d.progress >= 100) {
+            es.close();
+            fetch("/result/" + jobId)
+              .then((r) => r.json())
+              .then((j) => {
+                if (j.error) return alert("Result error: " + j.error);
+                renderResults(j.result);
+              })
+              .catch((err) => alert("Failed to get result: " + err));
+          }
+        });
+        es.onerror = () => {
+          es.close();
+          parsingStatus.textContent = "connection lost";
+        };
+      }
+
+      function renderResults(result) {
+        const { headersDetected, columnsDetected, rowsCount, rows } = result;
+        let html = `<h3 class="text-lg font-semibold text-gray-700 mb-2">Detected headers</h3>
+        <pre class="bg-gray-50 p-2 rounded">${JSON.stringify(
+          headersDetected,
+          null,
+          2
+        )}</pre>`;
+        html += `<h3 class="text-lg font-semibold text-gray-700 mt-4 mb-2">Columns detected (indexes)</h3>
+        <pre class="bg-gray-50 p-2 rounded">${JSON.stringify(
+          columnsDetected,
+          null,
+          2
+        )}</pre>`;
+        html += `<h3 class="text-lg font-semibold text-gray-700 mt-4 mb-2">Rows: ${rowsCount}</h3>`;
+        html += `<div class="overflow-x-auto"><table class="table-auto w-full border border-gray-200 text-sm">
+          <thead class="bg-gray-100 text-gray-700">
+            <tr>
+              <th class="p-2 border">#</th>
+              <th class="p-2 border">POL</th>
+              <th class="p-2 border">POD</th>
+              <th class="p-2 border">RATE</th>
+              <th class="p-2 border">SIZE</th>
+              <th class="p-2 border">CONTAINER_TYPE</th>
+              <th class="p-2 border">BELOW_CM</th>
+              <th class="p-2 border">TYPE_MATCH</th>
+            </tr>
+          </thead>
+          <tbody>`;
+        for (const r of rows) {
+          html += `<tr>
+            <td class="p-2 border">${r._rowNumber}</td>
+            <td class="p-2 border">${r.POL}</td>
+            <td class="p-2 border">${r.POD}</td>
+            <td class="p-2 border">${r.RATE}</td>
+            <td class="p-2 border">${r.SIZE}</td>
+            <td class="p-2 border">${r.CONTAINER_TYPE}</td>
+            <td class="p-2 border"><span class="px-2 py-1 rounded text-xs font-semibold ${
+              r.BELOW_CM
+                ? "bg-red-100 text-red-700"
+                : "bg-green-100 text-green-700"
+            }">${r.BELOW_CM ? "BELOW" : "OK"}</span></td>
+            <td class="p-2 border"><span class="px-2 py-1 rounded text-xs font-semibold ${
+              r.TYPE_MATCH
+                ? "bg-green-100 text-green-700"
+                : "bg-red-100 text-red-700"
+            }">${r.TYPE_MATCH ? "MATCH" : "NO"}</span></td>
+          </tr>`;
+        }
+        html += "</tbody></table></div>";
+        resultArea.innerHTML = html;
+      }
+    </script>
+  </body>
+</html>
