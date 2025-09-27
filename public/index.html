@@ -4,9 +4,27 @@
     <meta charset="utf-8" />
     <title>Upload Excel — Parser Demo</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      body, html {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;
+      }
+      canvas {
+        position: fixed;
+        top: 0;
+        left: 0;
+        z-index: -1;
+      }
+    </style>
   </head>
-  <body class="bg-gray-100 min-h-screen flex items-center justify-center p-6">
-    <div class="w-full max-w-4xl bg-white rounded-2xl shadow-xl p-8">
+  <body class="flex items-center justify-center p-6">
+    <!-- Background -->
+    <canvas id="bg"></canvas>
+
+    <!-- Main Container -->
+    <div class="w-full max-w-4xl bg-white rounded-2xl shadow-xl p-8 relative z-10">
       <h2 class="text-2xl font-bold text-indigo-600 mb-4">
         Excel Parser: Detect POL, POD, RATES, SIZE, CONTAINER TYPE
       </h2>
@@ -68,6 +86,62 @@
     </div>
 
     <script>
+      // =========================
+      // Background Animation
+      // =========================
+      const canvas = document.getElementById("bg");
+      const ctx = canvas.getContext("2d");
+      let w, h;
+
+      function resize() {
+        w = canvas.width = window.innerWidth;
+        h = canvas.height = window.innerHeight;
+      }
+      resize();
+      window.addEventListener("resize", resize);
+
+      const dots = Array.from({ length: 70 }, () => ({
+        x: Math.random() * w,
+        y: Math.random() * h,
+        dx: (Math.random() - 0.5) * 1,
+        dy: (Math.random() - 0.5) * 1,
+      }));
+
+      function animate() {
+        ctx.fillStyle = "black";
+        ctx.fillRect(0, 0, w, h);
+
+        for (let i = 0; i < dots.length; i++) {
+          const d = dots[i];
+          d.x += d.dx;
+          d.y += d.dy;
+          if (d.x < 0 || d.x > w) d.dx *= -1;
+          if (d.y < 0 || d.y > h) d.dy *= -1;
+
+          ctx.beginPath();
+          ctx.arc(d.x, d.y, 2, 0, Math.PI * 2);
+          ctx.fillStyle = "white";
+          ctx.fill();
+
+          for (let j = i + 1; j < dots.length; j++) {
+            const d2 = dots[j];
+            const dist = Math.hypot(d.x - d2.x, d.y - d2.y);
+            if (dist < 120) {
+              ctx.strokeStyle = "rgba(255,255,255,0.2)";
+              ctx.beginPath();
+              ctx.moveTo(d.x, d.y);
+              ctx.lineTo(d2.x, d2.y);
+              ctx.stroke();
+            }
+          }
+        }
+        requestAnimationFrame(animate);
+      }
+      animate();
+
+      // =========================
+      // Upload + Parsing Logic
+      // =========================
       const fileInput = document.getElementById("file");
       const uploadBtn = document.getElementById("uploadBtn");
       const uploadBar = document.getElementById("uploadBar");
@@ -90,7 +164,7 @@
         parsePercent.textContent = "0% (estimating...)";
 
         const form = new FormData();
-        form.append("file", f);
+        form.append("file", f); // ✅ Formidable expects "file"
 
         const xhr = new XMLHttpRequest();
         xhr.open("POST", "/upload", true);
@@ -129,12 +203,9 @@
           parsingStatus.textContent = d.status || "";
 
           if (d.progress) {
-            const elapsed = (Date.now() - startTime) / 1000; // seconds
-            const rate = d.progress / elapsed; // percent per second
-            const remaining = Math.max(
-              0,
-              Math.round((100 - d.progress) / rate)
-            );
+            const elapsed = (Date.now() - startTime) / 1000;
+            const rate = d.progress / elapsed;
+            const remaining = Math.max(0, Math.round((100 - d.progress) / rate));
             parsePercent.textContent = `${d.progress}% (~${remaining}s left)`;
           }
 
@@ -163,17 +234,9 @@
       function renderResults(result) {
         const { headersDetected, columnsDetected, rowsCount, rows } = result;
         let html = `<h3 class="text-lg font-semibold text-gray-700 mb-2">Detected headers</h3>
-        <pre class="bg-gray-50 p-2 rounded">${JSON.stringify(
-          headersDetected,
-          null,
-          2
-        )}</pre>`;
+        <pre class="bg-gray-50 p-2 rounded">${JSON.stringify(headersDetected, null, 2)}</pre>`;
         html += `<h3 class="text-lg font-semibold text-gray-700 mt-4 mb-2">Columns detected (indexes)</h3>
-        <pre class="bg-gray-50 p-2 rounded">${JSON.stringify(
-          columnsDetected,
-          null,
-          2
-        )}</pre>`;
+        <pre class="bg-gray-50 p-2 rounded">${JSON.stringify(columnsDetected, null, 2)}</pre>`;
         html += `<h3 class="text-lg font-semibold text-gray-700 mt-4 mb-2">Rows: ${rowsCount}</h3>`;
         html += `<div class="overflow-x-auto"><table class="table-auto w-full border border-gray-200 text-sm">
           <thead class="bg-gray-100 text-gray-700">
@@ -198,14 +261,10 @@
             <td class="p-2 border">${r.SIZE}</td>
             <td class="p-2 border">${r.CONTAINER_TYPE}</td>
             <td class="p-2 border"><span class="px-2 py-1 rounded text-xs font-semibold ${
-              r.BELOW_CM
-                ? "bg-red-100 text-red-700"
-                : "bg-green-100 text-green-700"
+              r.BELOW_CM ? "bg-red-100 text-red-700" : "bg-green-100 text-green-700"
             }">${r.BELOW_CM ? "BELOW" : "OK"}</span></td>
             <td class="p-2 border"><span class="px-2 py-1 rounded text-xs font-semibold ${
-              r.TYPE_MATCH
-                ? "bg-green-100 text-green-700"
-                : "bg-red-100 text-red-700"
+              r.TYPE_MATCH ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
             }">${r.TYPE_MATCH ? "MATCH" : "NO"}</span></td>
           </tr>`;
         }
