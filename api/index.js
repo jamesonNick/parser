@@ -1,20 +1,20 @@
-// api/index.js (Vercel-ready)
+// api/index.js (Vercel-ready with Formidable)
 
 import express from "express";
-import multer from "multer";
+import formidable from "formidable";
 import XLSX from "xlsx";
 import cors from "cors";
 import { v4 as uuidv4 } from "uuid";
 import fs from "fs";
 import serverless from "serverless-http";
 
-const upload = multer({ dest: "/tmp" }); // ✅ use /tmp for Vercel runtime
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 const jobs = {}; // in-memory job tracker
 
+// Candidate headers
 const headerCandidates = {
   POL: ["pol", "port of loading", "port loading"],
   POD: ["pod", "port of discharge", "port discharge"],
@@ -54,15 +54,24 @@ const config = {
   ],
 };
 
-// 📤 Upload endpoint
-app.post("/upload", upload.single("file"), async (req, res) => {
-  try {
-    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+// 📤 Upload endpoint (Formidable instead of Multer)
+app.post("/upload", (req, res) => {
+  const form = formidable({
+    multiples: false,
+    uploadDir: "/tmp", // ✅ must use /tmp on Vercel
+    keepExtensions: true,
+  });
+
+  form.parse(req, (err, fields, files) => {
+    if (err) return res.status(500).json({ error: err.message });
+
+    const file = files.file?.[0] || files.file; // Formidable v3 returns array sometimes
+    if (!file) return res.status(400).json({ error: "No file uploaded" });
 
     const jobId = uuidv4();
     jobs[jobId] = { progress: 0, status: "uploaded", result: null, error: null };
 
-    parseFile(req.file.path, jobId).catch((err) => {
+    parseFile(file.filepath, jobId).catch((err) => {
       console.error("Parse error", err);
       jobs[jobId].error = err.message || String(err);
       jobs[jobId].status = "error";
@@ -70,9 +79,7 @@ app.post("/upload", upload.single("file"), async (req, res) => {
     });
 
     res.json({ jobId });
-  } catch (err) {
-    res.status(500).json({ error: err.message || String(err) });
-  }
+  });
 });
 
 // 📊 Progress endpoint (SSE)
@@ -87,9 +94,6 @@ app.get("/progress/:jobId", (req, res) => {
     Connection: "keep-alive",
   });
   res.flushHeaders();
-
-  res.write(`event: progress\n`);
-  res.write(`data: ${JSON.stringify({ progress: job.progress, status: job.status, error: job.error })}\n\n`);
 
   const interval = setInterval(() => {
     const j = jobs[jobId];
